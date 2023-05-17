@@ -27,9 +27,11 @@ if [ ! -f ~/.config/ag/project.cfg ]; then
     dselect 
     projects_path=$(0<"${dir_tmp}/${file_tmp}")
     echo "projects_path = $projects_path"
-    echo "projects_path = $projects_path" >>~/.config/ag/project.cfg
+    echo "projects_path=$projects_path" >>~/.config/ag/project.cfg
 else
-    projects_path=$(cat ~/.config/ag/project.cfg)
+    # If the config folder contains a project.cfg file, read the value after = from the config file
+    projects_path=$(cat ~/.config/ag/project.cfg | grep projects_path | sed 's/projects_path=//g')
+    echo "projects_path = $projects_path"
 fi
 
 # functions
@@ -72,9 +74,6 @@ function checkProjectStatus() {
         # Get the current remote and branch
         current_remote=$(git remote show -n 1)
         current_branch=$(git branch | sed -n '1p')
-
-        # Get the current manifest
-        # manifest=$(repo manifest -o manifest.xml)
 
         # get the path of $repo relative to $TARGET_PROJECT_PATH
         repo_path=$(echo $repo | sed 's/'$TARGET_PROJECT_PATH'/''/g')
@@ -152,90 +151,159 @@ function checkProjectStatus() {
 
 }
 
+function cloneAndroidGeneric() {
+
+    TARGET_AG_PROJECT_PATH=$1
+
+    if [[ ! -d $TARGET_AG_PROJECT_PATH/vendor/ag ]]; then
+        # Ask the user if they would like to clone Android-Generic Project into their projects folder
+        input 1 "Would you like to clone Android-Generic Project into your projects folder? (y/n)" "n"
+        clone_answer=$(0<"${dir_tmp}/${file_tmp}")
+
+        if [[ "$clone_answer" == "y" ]]; then
+            # cd into the project folder
+            cd $TARGET_AG_PROJECT_PATH
+            echo "Current directory: $TARGET_AG_PROJECT_PATH"
+            # clone in ag to vendor/ag
+            git clone https://github.com/android-generic/vendor_ag vendor/ag
+            cd $PWD
+        else
+            echo "Nothing to do. I guess we will have to part ways for now"
+            exit 0
+        fi
+    else
+        echo "Android-Generic Project already exists in your projects folder"
+    fi
+
+
+}
+
+function deleteProject() {
+    TARGET_AG_PROJECT_PATH=$1
+    input 1 "Would you like to delete $TARGET_AG_PROJECT_PATH? (DELETE/n)" "n"
+    DELETE_PROJECT_ANSWER=$(0<"${dir_tmp}/${file_tmp}")
+    if [[ $DELETE_PROJECT_ANSWER == "DELETE" ]]; then
+        rm -rf $TARGET_AG_PROJECT_PATH
+    fi
+
+}
+
+function updateProject() {
+    TARGET_AG_PROJECT_PATH=$1
+    cd $TARGET_AG_PROJECT_PATH
+    input 1 "Do you want to Force updates of $TARGET_AG_PROJECT_PATH? \n(WARNING: This will force updates and any unpushed changes will be lost). (y/n)" "n"
+    REPO_SYNC_ANSWER=$(0<"${dir_tmp}/${file_tmp}")
+    if [[ $REPO_SYNC_ANSWER == "y" ]]; then
+        repo sync --force-sync
+    else
+        repo sync
+    fi
+}
+
 # main
 
 # Find all subfolders in the projects folder
 subfolders_list=$(find $projects_path -maxdepth 1 -mindepth 1 -type d)
-
-# create a list of the subfolders using the name of each subfolder
-# IFS=$'\n' subfolders=($subfolders_list)
+echo "subfolders_list = $subfolders_list"
 
 # Save the list of subfolders to a new variable in the "projects.list" file.
 echo "$subfolders_list" >~/.config/ag/projects.list
 
+# Build a list of menu items
+main_menu_items=("Initialize Supported Project" "Create New" "Setup Virtual Environment" "Check Project Status" "Add AG To Project" "Update Project" "Delete Project" "Exit")
+
 # present the list as a menu, with a Create New option added.
-menu "$subfolders_list" "Initialize Supported Project" "Create New" "Setup Virtual Environment" "Check Project Status" "Exit"
+menu "$subfolders_list" "${main_menu_items[@]}"
 projects_answer=$(0<"${dir_tmp}/${file_tmp}")
 
 if [[ "$projects_answer" == "Initialize Supported Project" ]]; then
     # Check $SCRIPT_PATH/projects/api-* to see what api's are supported
     # Here is a table of the Android versions and their corresponding API levels:
 
-    # | Android Version | API Level |
-    # |---              |---        |
-    # | Android 13      | 33        |
-    # | Android 12.1    | 32        |
-    # | Android 12      | 31        |
-    # | Android 11      | 30        |
-    # | Android 10      | 29        |
-    # | Android 9       | 28        |
-    api_levels=$(find $SCRIPT_PATH/projects/api-* -maxdepth 1 -mindepth 1 -type d)
+    # echo api versions to text function using EOF
+    echo "We need to start off by selecting an Android version using the API level
+    Android Version | API Level
+    ---             |---
+    Android 13      | 33
+    Android 12.1    | 32
+    Android 12      | 31
+    Android 11      | 30
+    Android 10      | 29
+    Android 9       | 28
+
+    Select OK to continue
+    " | text
+    api_levels=$(find $SCRIPT_PATH/projects/ -maxdepth 1 -mindepth 1 -type d | cut -d '-' -f 4 | sort | uniq)
+    echo "api_levels = $api_levels"
     menu "$api_levels"
     api_answer=$(0<"${dir_tmp}/${file_tmp}")
-
-    # create new eligible_projects variable with the subfolders in the $SCRIPT_PATH/projects/$api_answer
-    eligible_projects=$(find $SCRIPT_PATH/projects/$api_answer -maxdepth 1 -mindepth 1 -type d)
+    if [[ "$api_answer" == 0 ]]; then
+        echo "$api_answer is not a valid API level"
+        exit 1
+    fi
 
     # find all *.prj files in the $SCRIPT_PATH/projects/$api_answer/ folder and make a list of those projects
-    eligible_project_files=$(find $SCRIPT_PATH/projects/$api_answer -maxdepth 1 -mindepth 1 -type f -name "*.prj")
+    eligible_project_files=$(find $SCRIPT_PATH/projects/api-$api_answer -maxdepth 1 -mindepth 1 -type f -name "*.prj")
+    echo "eligible_project_files = $eligible_project_files"
 
     # read each of the $eligible_project_files files and create a menu entry for each project using the
-    # TIITLE="*" value inside
+    # TIITLE="*" value inside the file
+    project_titles=()
     for project_file in $eligible_project_files; do
         while read -r line; do
             if [[ "$line" == *"TIITLE"* ]]; then
-                project_titles=()
+                echo "line = $line"
                 project_pre_title=$(echo "$line" | sed 's/TIITLE=//g')
+                echo "project_pre_title = $project_pre_title"
+                # Add new element at the end of the array
                 project_titles+=("$project_pre_title")
             fi
-        done
+        done < "$project_file"
     done
+    echo """project_titles = "${project_titles[@]}""""
     info "Please choose from the following supported projects: "
-    menu "${project_titles[@]}"
+    menu ${project_titles[@]}
     project_title_answer=$(0<"${dir_tmp}/${file_tmp}")
+    if [[ "$project_title_answer" == 0 ]]; then
+        echo "$project_title_answer is not a valid project title"
+        exit 1
+    fi
     for project_file in $eligible_project_files; do
+        seleced_project="false"
         while read -r line; do
             if [[ "$line" == *"TIITLE"* ]]; then
-                seleced_project="true"
-            else
-                seleced_project="false"
+                selected_project_pre_title=$(echo "$line" | sed 's/TIITLE=//g'|tr -d '\n\t\r ' | tr -d '"')
+                echo "selected_project_pre_title: $selected_project_pre_title"
+                selected_project_title_answer=$(echo "$project_title_answer"|tr -d '\n\t\r ')
+                echo "selected_project_title_answer: $selected_project_title_answer"
+                if [[ "$selected_project_pre_title" == "$selected_project_title_answer" ]]; then
+                    seleced_project="true"
+                fi
             fi
+            echo "seleced_project: $seleced_project"
             if [[ "$seleced_project" == "true" ]] && [[ "$line" == *"MANIFEST_URL"* ]]; then
                 project_manifest_url=$(echo "$line" | sed 's/MANIFEST_URL=//g')
+                echo "project_manifest_url: $project_manifest_url"
             fi
             if [[ "$seleced_project" == "true" ]] && [[ "$line" == *"MANIFEST_BRANCH"* ]]; then
                 project_manifest_branch=$(echo "$line" | sed 's/MANIFEST_BRANCH=//g')
+                echo "project_manifest_branch: $project_manifest_branch"
             fi
             if [[ "$seleced_project" == "true" ]] && [[ "$line" == *"REQUIRES_AG"* ]]; then
                 project_requires_ag=$(echo "$line" | sed 's/REQUIRES_AG=//g')
-                if [[ "$project_requires_ag" == "true" ]]; then
-                    project_requires_ag="true"
-                else
-                    project_requires_ag="false"
-                fi
+                echo "project_requires_ag: $project_requires_ag"
             fi
             if [[ "$seleced_project" == "true" ]] && [[ "$line" == *"GIT_LFS"* ]]; then
                 project_git_lfs=$(echo "$line" | sed 's/GIT_LFS=//g')
-                if [[ "$project_git_lfs" == "true" ]]; then
-                    project_git_lfs="true"
-                else
-                    project_git_lfs="false"
-                fi
+                echo "project_git_lfs: $project_git_lfs"
             fi
             if [[ "$seleced_project" == "true" ]] && [[ "$line" == *"DEPENDENCIES"* ]]; then
                 project_dependencies=$(echo "$line" | sed 's/DEPENDENCIES=//g')
+                echo "project_dependencies: $project_dependencies"
             fi
-        done
+        done < "$project_file"
+
+        
     done
 
     # check through the project_dependencies and verify that the package is installed on the host
@@ -266,7 +334,7 @@ if [[ "$projects_answer" == "Initialize Supported Project" ]]; then
     fi
 
     # ask the user what they would like to name their new project folder
-    input 1 "Please enter the name of your new project folder: "
+    input 1 "Please enter the name of your new project folder: " "eg: my_project"
     project_name=$(0<"${dir_tmp}/${file_tmp}")
 
     # create new project folder in the user specified location
@@ -274,13 +342,21 @@ if [[ "$projects_answer" == "Initialize Supported Project" ]]; then
 
     # cd into that folder and use the $project_manifest_url and $project_manifest_branch variables to repo init
     cd $projects_path/$project_name
+    echo "moving to path: $projects_path/$project_name"
+
+    # repo init
+    project_manifest_url=$(echo "$project_manifest_url"| tr -d '"')
+    echo "project_manifest_url = $project_manifest_url"
+    project_manifest_branch=$(echo "$project_manifest_branch"| tr -d '"')
+    echo "project_manifest_branch = $project_manifest_branch"
     if [[ "$project_git_lfs" == "true" ]]; then
         repo init -u $project_manifest_url -b $project_manifest_branch --git-lfs
     else
         repo init -u $project_manifest_url -b $project_manifest_branch
     fi
+    info "repo init done, now continuing onto the initial sync"
     repo sync
-    cd $SCRIPT_PATH
+    cd $PWD
     # Save the current_project_folder to the config file
     echo "current_project_folder = $project_name" >>~/.config/ag/project.cfg
 elif [[ "$projects_answer" == "Create New" ]]; then
@@ -383,7 +459,7 @@ elif [[ "$projects_answer" == "Create New" ]]; then
     echo "REQUIRES_AG=$project_requires_ag" >>$SCRIPT_PATH/projects/api-$project_target_api/$project_name.prj
     echo "GIT_LFS=$project_git_lfs" >>$SCRIPT_PATH/projects/api-$project_target_api/$project_name.prj
 
-    ok_message "$project_name.prj created in $SCRIPT_PATH/projects/api-$project_target_api"
+    ok_message "$project_name.prj created in $SCRIPT_PATH/projects/api-$project_target_api \nYou will be given the option to commit your changes when complete."
 
     # Save the current_project_folder to the config file
     echo "current_project_folder = $project_name" >>~/.config/ag/project.cfg
@@ -401,53 +477,70 @@ elif [[ "$projects_answer" == "Create New" ]]; then
 
     echo "Running repo sync for that project now"
     # run repo sync command in the terminal window to show progress
-    repo sync --force-sync -c 
+    repo sync --force-sync -c
 elif [[ "$projects_answer" == "Setup Virtual Environment" ]]; then
     # Select what project to setup the setupVirtenv() function for
     info "Please select which project to setup the virtual environment for"
     dselect "$projects_path"
     current_project_folder=$(0<"${dir_tmp}/${file_tmp}")
+    echo "current_project_folder = $current_project_folder"
     setupVirtenv $current_project_folder
 elif [[ "$projects_answer" == "Check Project Status" ]]; then
     # Select what project to check the checkProjectStatus() function for
     info "Please select which project to check the project status for"
     dselect "$projects_path"
+    current_project_folder=$(0<"${dir_tmp}/${file_tmp}")
+    echo "current_project_folder = $current_project_folder"
     checkProjectStatus $current_project_folder
+elif [[ "$projects_answer" == "Delete Project" ]]; then
+    # Select what project to delete the deleteProject() function for
+    info "Please select which project to delete"
+    dselect "$projects_path"
+    current_project_folder=$(0<"${dir_tmp}/${file_tmp}")
+    echo "current_project_folder = $current_project_folder"
+    deleteProject $current_project_folder
+elif [[ "$projects_answer" == "Update Project" ]]; then
+    # Select what project to update the updateProject() function for
+    info "Please select which project to update"
+    dselect "$projects_path"
+    current_project_folder=$(0<"${dir_tmp}/${file_tmp}")
+    echo "current_project_folder = $current_project_folder"
+    updateProject $current_project_folder
+elif [[ "$projects_answer" == "Add AG To Project" ]]; then
+    # Select what project to add the cloneAndroidGeneric() function for
+    info "Please select which project to add AG to"
+    dselect "$projects_path"
+    current_project_folder=$(0<"${dir_tmp}/${file_tmp}")
+    echo "current_project_folder = $current_project_folder"
+    cloneAndroidGeneric $current_project_folder
 elif [[ "$projects_answer" == "Exit" ]]; then
     exit 0
-else
+elif [[ -d "$projects_answer" ]]; then
     # cd into the $projects_answer folder and set this as the current_project_folder variable
     cd $projects_answer
     current_project_folder=$projects_answer
     # Save the current_project_folder to the config file
     echo "current_project_folder = $current_project_folder" >>~/.config/ag/project.cfg
-    cd $SCRIPT_PATH
+    cd $PWD
+else 
+    echo "not a valid selection"
+    exit 0
 fi
+
+# Ask if this project requires Android-Generic
 if [[ "$project_requires_ag" == "true" ]]; then
-    echo "This project requires Android-Generic to be cloned thio the project folder in order to build Android-x86 (PC)"
-fi
-if [[ ! -d $current_project_folder/vendor/ag ]]; then
-    # Ask the user if they would like to clone Android-Generic Project into their projects folder
-    input 1 "Would you like to clone Android-Generic Project into your projects folder? (y/n)"
-    clone_answer="${?}"
-
-    if [[ "$clone_answer" == "y" ]]; then
-        # cd into the project folder
-        cd $current_project_folder
-        # clone in ag to vendor/ag
-        git clone https://github.com/android-generic/ag vendor/ag
-        cd $SCRIPT_PATH
-
-    fi
+    echo "This project requires Android-Generic to be cloned thio the project folder in order to build Android-x86 (PC)" | text 
+    cloneAndroidGeneric
 fi
 
 if [[ -d $current_project_folder/vendor/ag ]]; then
 
     # Ask if they would like to launch the AG menu option
-    input 1 "Would you like to launch the Android-Generic Project Menu? (y/n)"
-    ag_menu_answer="${?}"
+    input 1 "Would you like to launch the Android-Generic Project Menu? (y/n)" "y"
+    ag_menu_answer=$(0<"${dir_tmp}/${file_tmp}")
     if [[ "$ag_menu_answer" == "y" ]]; then
-
+        cd $current_project_folder
+        . build/envsetup.sh
         ag-menu 
     fi
 fi
@@ -459,10 +552,13 @@ cd $SCRIPT_PATH
 needs_updating=$(git status --porcelain)
 if [[ "$needs_updating" != "" ]]; then
     # Ask the user if they would like to commit the changes
-    input 1 "Would you like to commit the changes in $SCRIPT_PATH? (y/n)"
-    commit_answer="${?}"
+    input 1 "Would you like to commit the changes in $SCRIPT_PATH? (y/n)" "n"
+    commit_answer=$(0<"${dir_tmp}/${file_tmp}")
     if [[ "$commit_answer" == "y" ]]; then
         git add .
         git commit -m "Project $current_project_folder updated"
+        info "Project $current_project_folder updated, please consider submitting your changes in a pull-request"
+    else
+        info "Project $current_project_folder not updated"
     fi
 fi
