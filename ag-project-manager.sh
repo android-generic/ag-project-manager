@@ -53,18 +53,28 @@ function setupVirtenv() {
 function checkProjectStatus() {
     TARGET_PROJECT_PATH=$1
     cd $TARGET_PROJECT_PATH
+    echo "TARGET_PROJECT_PATH = $TARGET_PROJECT_PATH"
     # Get the list of all repos
-    repos=$(find $TARGET_PROJECT_PATH -type d -name ".git")
+    echo "Getting list of repos..."
+    repos=$(find -L $TARGET_PROJECT_PATH -type d -name ".git" -o -type l -name ".git")
+    # repos=$(find $TARGET_PROJECT_PATH -type d -name ".git")
 
     # Create a variable to store repos that need to be pushed
     repos_to_push=""
+    repos_array=()
 
     # Get the current projects manifest file and save it to a temp folder
+    echo "Getting current projects manifest..."
     manifest=$(repo manifest -o $TEMP_PATH/manifest.xml)
 
     # Also get a revisional manifest for top commit ID
+    echo "Generating revisional manifest. Please wait..."
     revisional_manifest=$(repo manifest -o $TEMP_PATH/revisional_manifest.xml -r)
-
+    
+    # Get the current date and time
+    current_date=$(date +"%Y%m%d%H%M%S")
+    # Save $repos_to_push to a file and show the user using alert_dialog
+    echo "$TARGET_PROJECT_PATH" >$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
     # For each repo
     for repo in $repos; do
 
@@ -76,63 +86,100 @@ function checkProjectStatus() {
         current_branch=$(git branch | sed -n '1p')
 
         # get the path of $repo relative to $TARGET_PROJECT_PATH
-        repo_path=$(echo $repo | sed 's/'$TARGET_PROJECT_PATH'/''/g')
-        echo "repo_path: $repo_path"
-        
+        prefix="$TARGET_PROJECT_PATH/"
+        suffix="/.git"
+        string="$repo"
+        repo_path=${string#"$prefix"}
+        repo_path=${repo_path%"$suffix"}
+
         # check the $TEMP_PATH/manifest.xml for the line containing $repo_path
         # and if it does not exist, add it to $repos_to_push
-        if ! grep -q "$repo_path" $TEMP_PATH/manifest.xml; then
-            repos_to_push="$repos_to_push $repo"
+        isInFile=$(echo "$manifest" | grep -c "$repo_path")
+
+        if [ $isInFile -ne 0 ]; then
+            echo "Project not found in manifest.xml: $repo_path"
+            # repos_to_push="$repos_to_push $repo"
+            echo "NOT IN MANIFEST: $repo_path" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
             # Get current revision using git branch --show-current
-            revision=$(git branch --show-current)
-            echo "revision: $revision"
+            revision=$(git --work-tree=$repo branch --show-current)
+            # echo "revision: $revision"
         else
-            echo "repo_path already exists in $TEMP_PATH/manifest.xml"
-            # grab the revision=* value from the line that $repo_path is on
-            revision=$(grep "$repo_path" $TEMP_PATH/manifest.xml | sed 's/revision=//g')
-            echo "revision: $revision"
+            # echo "repo_path already exists in manifest.xml"
+
             # check for uncommitted changes
-            if [ -n "$(git status --porcelain)" ]; then
+            base_repo_path=${repo%"$suffix"}
+            uncommitted_changes=$(git --work-tree=$base_repo_path status --porcelain | grep -c "M ")
+            if [[ "$uncommitted_changes" != "" ]] && [[ "$uncommitted_changes" -ne 0 ]] && [[ "$uncommitted_changes" != "nothing to commit, working tree clean" ]]; then 
+                echo "repo_path: $repo_path"
                 echo "repo has uncommitted changes"
-                repos_to_push="$repos_to_push $repo"
+                echo "UNCOMMITTED CHANGES: $uncommitted_changes : $repo_path" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
             fi
 
-            # Check if the top commit ID matches up with the revisional_manifest for this repo
-            rv_revision=$(grep "$repo_path" $TEMP_PATH/revisional_manifest.xml | sed 's/revision=//g')
-            echo "rv_revision: $rv_revision"
             # use git log to get the top commit ID
-            top_commit_id=$(git log -n 1 --pretty=format:%H)
-            echo "top_commit_id: $top_commit_id"
-            if [ "$top_commit_id" != "$rv_revision" ]; then
-                repos_to_push="$repos_to_push $repo"
+            top_commit_id=$(git --work-tree=$base_repo_path log -n 1 --pretty=format:%H)
+            # echo "top_commit_id: $top_commit_id"
+            short_commit_id=$(echo ${top_commit_id:0:10})
+            
+            # Check if the top commit ID matches up with the revisional_manifest for this repo
+            rv_revision_pre=$(cat $TEMP_PATH/revisional_manifest.xml | grep "$repo_path")
+            rv_revision_post=$(echo "$rv_revision_pre" | grep -o -P '(?<=revision=")[^"]+')
+            short_rev_post=$(echo ${rv_revision_post:0:10})
+            
+
+            if [[ "$short_commit_id" != "$short_rev_post" ]] && [[ ! ${#top_commit_id} -gt 25 ]] && [[ "$short_commit_id" != "" ]] && [[ "$short_rev_post" != "" ]] ; then
+                echo "repo_path: $repo_path"
+                echo "short_commit_id: $short_commit_id"
+                echo "short_rev_post: $short_rev_post"
+                echo "Repo is checked out at a different place than in the manifest: $repo_path"
+                echo "REVISION ID MISMATCH: $repo_path" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
             fi
+            
+            # Check if the top commit ID matches up with the revisional_manifest for this repo
+            m_branch_pre=$(cat $TEMP_PATH/manifest.xml | grep "$repo_path")
+            m_branch_post=$(echo "$m_branch_pre" | grep -o -P '(?<=revision=")[^"]+')
+            # echo "m_branch_pre: $m_branch_pre"
+            # echo "m_branch_post: $m_branch_post"
+
+            # Get the repo remote URL using git remote show
+            repo_remote=$(git remote show)
+            # echo "repo_remote: $repo_remote"
+
+            git_remote_url=$(git remote get-url $repo_remote)
+            # echo "git_remote_url: $git_remote_url"
+
+            # Get the repo branch name from git branch --show-current
+            repo_branch=$(git --work-tree=$base_repo_path branch --show-current)
+            # echo "repo_branch: $repo_branch"
+
+            # Check the upstream remote has the current branched checked out at the same top_commit_id
+            upstream_remote=$(git --work-tree=$base_repo_path ls-remote --heads $git_remote_url)
+            upstream_commit_id=$(echo "$upstream_remote" | grep "refs/heads/$m_branch_post" | cut -f1)
+            # echo "upstream_commit_id: $upstream_commit_id"
+
+            if ! echo "$upstream_commit_id" | grep -q "$top_commit_id"; then
+                echo "top_commit_id is not within upstream_commit_id"
+                echo "repo_path: $repo_path"
+                echo "TOP COMMIT ID DOES NOT MATCH UPSTREAM: $repo_path" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
+            fi
+
         fi
-        
-        # Get the current date and time
-        current_date=$(date +"%Y%m%d%H%M%S")
-        # Save $repos_to_push to a file and show the user using alert_dialog
-        echo "$repos_to_push" >$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
-
-        # convert $repos_to_push to an array
-        repos_array=($repos_to_push)
-
-        alert_message "Repos that need to be pushed \n{$repos_to_push[@]}"
 
         cd $PWD
-
+        
     done
 
     # If there are any repos that need to be pushed, display them and ask the user if they would like to push them
-    if [[ $(cat repos_to_push.txt | wc -l) -gt 0 ]]; then
+    if [[ $(cat $TARGET_PROJECT_PATH/repos_to_push-$current_date.txt | wc -l) -gt 0 ]]; then
         echo "The following repos need to be pushed:"
-        cat repos_to_push.txt
+        cat $TARGET_PROJECT_PATH/repos_to_push-$current_date.txt | text
 
         # Ask the user if they would like to push the repos
-        read -p "Would you like to push the repos? (y/n) " push_repos
+        input 1 "Would you like to push the repos? (y/n) " "n"
+        push_repos=$(0<"${dir_tmp}/${file_tmp}")
 
         # If the user says yes, push the repos
         if [[ $push_repos == "y" ]]; then
-            for repo in $(cat repos_to_push.txt); do
+            for repo in $(cat $TARGET_PROJECT_PATH/repos_to_push-$current_date.txt); do
             cd $repo
             git push $current_remote $current_branch
             done
@@ -141,11 +188,12 @@ function checkProjectStatus() {
 
     # If the user wants to generate a manifest, generate it
     if [[ $push_repos == "y" ]]; then
-        read -p "Would you like to generate a manifest now? (y/n) " generate_manifest
+        input 1 "Would you like to generate a manifest now? (y/n) " "n"
+        generate_manifest=$(0<"${dir_tmp}/${file_tmp}")
 
         # If the user says yes, generate the manifest
         if [[ $generate_manifest == "y" ]]; then
-            repo manifest -o manifest.xml -r
+            repo manifest -o $TARGET_PROJECT_PATH/manifest-$current_date.xml -r
         fi
     fi
 
