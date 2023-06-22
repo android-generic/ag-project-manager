@@ -10,6 +10,7 @@
 PWD=$(pwd)
 TEMP_PATH=$(mktemp -d)
 SCRIPT_PATH=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+AG_CONFIG_PATH=~/.config/ag
 echo "SCRIPT_PATH: $SCRIPT_PATH"
 export PATH="$SCRIPT_PATH/core-menu/includes/:$PATH"
 source $SCRIPT_PATH/core-menu/includes/easybashgui
@@ -18,19 +19,19 @@ export supertitle="Android Generic Project Manager"
 export supericon="$SCRIPT_PATH/assets/ag-logo.png"
 
 # Create config folder in ~/.config
-mkdir -p ~/.config/ag
+mkdir -p $AG_CONFIG_PATH
 
 # Check if the config folder contains a project.cfg file that contains the location of the users projects folder
 # If not, ask the location of the projects folder on the local machine and save the variable to the config file
-if [ ! -f ~/.config/ag/project.cfg ]; then
+if [ ! -f $AG_CONFIG_PATH/project.cfg ]; then
     message "Please enter the location of your projects folder: "
     dselect 
     projects_path=$(0<"${dir_tmp}/${file_tmp}")
     echo "projects_path = $projects_path"
-    echo "projects_path=$projects_path" >>~/.config/ag/project.cfg
+    echo "projects_path=$projects_path" >>$AG_CONFIG_PATH/project.cfg
 else
     # If the config folder contains a project.cfg file, read the value after = from the config file
-    projects_path=$(cat ~/.config/ag/project.cfg | grep projects_path | sed 's/projects_path=//g')
+    projects_path=$(cat $AG_CONFIG_PATH/project.cfg | grep projects_path | sed 's/projects_path=//g')
     echo "projects_path = $projects_path"
 fi
 
@@ -248,6 +249,27 @@ function updateProject() {
     fi
 }
 
+function resetAgProjects() {
+    input 1 "Would you like to reset the AG Project folder? (y/n)" "n"
+    RESET_AG_CONFIG_ANSWER=$(0<"${dir_tmp}/${file_tmp}")
+    if [[ $RESET_AG_CONFIG_ANSWER == "y" ]]; then
+        rm -rf $AG_CONFIG_PATH/*
+    else
+        echo "Nothing to do. I guess we will have to part ways for now"
+        exit 0
+    fi
+}
+
+function pickNewProjectFolder() {
+    message "Please enter the location of your projects folder: "
+    dselect 
+    projects_path=$(0<"${dir_tmp}/${file_tmp}")
+    echo "projects_path = $projects_path"
+    echo "projects_path=$projects_path" >>$AG_CONFIG_PATH/project.cfg
+    # If the config folder contains a project.cfg file, read the value after = from the config file
+    # projects_path=$(cat $AG_CONFIG_PATH/project.cfg | grep projects_path | sed 's/projects_path=//g')
+}
+
 # main
 
 # Find all subfolders in the projects folder
@@ -255,10 +277,10 @@ subfolders_list=$(find $projects_path -maxdepth 1 -mindepth 1 -type d)
 echo "subfolders_list = $subfolders_list"
 
 # Save the list of subfolders to a new variable in the "projects.list" file.
-echo "$subfolders_list" >~/.config/ag/projects.list
+echo "$subfolders_list" >$AG_CONFIG_PATH/projects.list
 
 # Build a list of menu items
-main_menu_items=("Initialize Supported Project" "Create New" "Setup Virtual Environment" "Check Project Status" "Add AG To Project" "Update Project" "Delete Project" "Exit")
+main_menu_items=("Initialize Supported Project" "Create New" "Setup Virtual Environment" "Check Project Status" "Add AG To Project" "Update Project" "Delete Project" "Pick New Project Folder" "Exit")
 
 # present the list as a menu, with a Create New option added.
 menu "$subfolders_list" "${main_menu_items[@]}"
@@ -292,8 +314,12 @@ if [[ "$projects_answer" == "Initialize Supported Project" ]]; then
 
     # find all *.prj files in the $SCRIPT_PATH/projects/$api_answer/ folder and make a list of those projects
     eligible_project_files=$(find $SCRIPT_PATH/projects/api-$api_answer -maxdepth 1 -mindepth 1 -type f -name "*.prj")
+    eligible_private_project_files=$(find $SCRIPT_PATH/private_projects/api-$api_answer -maxdepth 1 -mindepth 1 -type f -name "*.prj")
     echo "eligible_project_files = $eligible_project_files"
+    echo "eligible_private_project_files = $eligible_private_project_files"
 
+    eligible_project_files="$eligible_project_files $eligible_private_project_files"
+    
     # read each of the $eligible_project_files files and create a menu entry for each project using the
     # TIITLE="*" value inside the file
     project_titles=()
@@ -406,7 +432,7 @@ if [[ "$projects_answer" == "Initialize Supported Project" ]]; then
     repo sync
     cd $PWD
     # Save the current_project_folder to the config file
-    echo "current_project_folder = $project_name" >>~/.config/ag/project.cfg
+    echo "current_project_folder = $project_name" >>$AG_CONFIG_PATH/project.cfg
 elif [[ "$projects_answer" == "Create New" ]]; then
     # we need to collect all the variables needed for the .prj file
     # this is done by using the variable names in the .prj file as the keys and their values as the values
@@ -510,7 +536,7 @@ elif [[ "$projects_answer" == "Create New" ]]; then
     ok_message "$project_name.prj created in $SCRIPT_PATH/projects/api-$project_target_api \nYou will be given the option to commit your changes when complete."
 
     # Save the current_project_folder to the config file
-    echo "current_project_folder = $project_name" >>~/.config/ag/project.cfg
+    echo "current_project_folder = $project_name" >>$AG_CONFIG_PATH/project.cfg
 
     # create new project folder in the user specified location
     mkdir -p $projects_path/$project_name
@@ -561,6 +587,12 @@ elif [[ "$projects_answer" == "Add AG To Project" ]]; then
     current_project_folder=$(0<"${dir_tmp}/${file_tmp}")
     echo "current_project_folder = $current_project_folder"
     cloneAndroidGeneric $current_project_folder
+elif [[ "$projects_answer" == "Pick New Project Folder" ]]; then
+    # Clears the Project Folder preferences and exits the script
+    resetAgProjects
+    pickNewProjectFolder
+    alert_message "Project Folder Reset Complete \nRelaunch the program to continue"
+    exit 0
 elif [[ "$projects_answer" == "Exit" ]]; then
     exit 0
 elif [[ -d "$projects_answer" ]]; then
@@ -568,7 +600,7 @@ elif [[ -d "$projects_answer" ]]; then
     cd $projects_answer
     current_project_folder=$projects_answer
     # Save the current_project_folder to the config file
-    echo "current_project_folder = $current_project_folder" >>~/.config/ag/project.cfg
+    echo "current_project_folder = $current_project_folder" >>$AG_CONFIG_PATH/project.cfg
     cd $PWD
 else 
     echo "not a valid selection"
@@ -589,7 +621,13 @@ if [[ -d $current_project_folder/vendor/ag ]]; then
     if [[ "$ag_menu_answer" == "y" ]]; then
         cd $current_project_folder
         . build/envsetup.sh
-        ag-menu 
+        if [[ -f $current_project_folder/vendor/ag/ag-menu-new.sh ]]; then
+            ag-menu
+        else
+            # Old version requires us to specify a target type (pc, gsi, emu)
+            # We will just choose pc for now
+            ag-menu pc 
+        fi
     fi
 fi
 
