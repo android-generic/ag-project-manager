@@ -21,6 +21,20 @@ export supericon="$SCRIPT_PATH/assets/ag-logo.png"
 # Create config folder in ~/.config
 mkdir -p $AG_CONFIG_PATH
 
+# Look for "-d|--debug" options flag
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        -d|--debug)
+            DEBUG=true
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
 # Check if the config folder contains a project.cfg file that contains the location of the users projects folder
 # If not, ask the location of the projects folder on the local machine and save the variable to the config file
 if [ ! -f $AG_CONFIG_PATH/project.cfg ]; then
@@ -57,7 +71,7 @@ function checkProjectStatus() {
     echo "TARGET_PROJECT_PATH = $TARGET_PROJECT_PATH"
     # Get the list of all repos
     echo "Getting list of repos..."
-    repos=$(find -L $TARGET_PROJECT_PATH -type d -name ".git" -o -type l -name ".git")
+    repos=$(find -L $TARGET_PROJECT_PATH -type d -name ".git" -o -type l -name ".git" -not -path "$TARGET_PROJECT_PATH/out/*")
     # repos=$(find $TARGET_PROJECT_PATH -type d -name ".git")
 
     # Create a variable to store repos that need to be pushed
@@ -114,6 +128,8 @@ function checkProjectStatus() {
                 echo "repo_path: $repo_path"
                 echo "repo has uncommitted changes"
                 echo "UNCOMMITTED CHANGES: $uncommitted_changes : $repo_path" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
+                open_git_changes=$(git status)
+                echo "      $open_git_changes" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
             fi
 
             # use git log to get the top commit ID
@@ -143,10 +159,17 @@ function checkProjectStatus() {
 
             # Get the repo remote URL using git remote show
             repo_remote=$(git remote show)
-            # echo "repo_remote: $repo_remote"
+            if [ "$DEBUG" == "true" ]; then
+                if [ "$repo_remote" == "" ]; then
+                    echo "repo_remote: $repo_remote"
+                fi
+            fi
 
             git_remote_url=$(git remote get-url $repo_remote)
-            # echo "git_remote_url: $git_remote_url"
+            if [ "$git_remote_url" == "" ]; then
+                echo "Path is currently checked out at a different branch with no remote URL: $repo_path"
+                echo "REPO CHECKED OUT AT DIFFERENT BRANCH: $repo_path" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
+            fi
 
             # Get the repo branch name from git branch --show-current
             repo_branch=$(git --work-tree=$base_repo_path branch --show-current)
@@ -158,7 +181,7 @@ function checkProjectStatus() {
             # echo "upstream_commit_id: $upstream_commit_id"
 
             if ! echo "$upstream_commit_id" | grep -q "$top_commit_id"; then
-                echo "top_commit_id is not within upstream_commit_id"
+                echo "top_commit_id does not match upstream_commit_id"
                 echo "repo_path: $repo_path"
                 echo "TOP COMMIT ID DOES NOT MATCH UPSTREAM: $repo_path" >>$TARGET_PROJECT_PATH/repos_to_push-$current_date.txt
             fi
@@ -270,6 +293,129 @@ function pickNewProjectFolder() {
     # projects_path=$(cat $AG_CONFIG_PATH/project.cfg | grep projects_path | sed 's/projects_path=//g')
 }
 
+# Repo fork functions
+function getMatchingRepos() {
+    local manifest_file=$1
+    local specified_remote=$2
+    local matching_repos=""
+
+    while IFS= read -r line; do
+        repo_path=$(echo $line | awk -F 'path="' '{print $2}' | awk -F '"' '{print $1}')
+        remote_url=$(echo $line | awk -F "$specified_remote" '{print $2}' | awk -F '"' '{print $3}')
+
+        if [[ "$remote_url" == *"$specified_remote"* ]]; then
+            matching_repos="$matching_repos $repo_path"
+        fi
+    done < $manifest_file
+
+    echo "$matching_repos"
+}
+
+function displayRepos() {
+    local repos=$1
+
+    echo "Repositories that match the specified remote:"
+    echo "$repos"
+}
+
+function askConfirmation() {
+    read -p "Do you want to proceed with creating forks? (y/n): " answer
+    echo "$answer"
+}
+
+function checkRepoExists() {
+    local target_org=$1
+    local repo_path=$2
+
+    existing_repo=$(curl -s "https://api.github.com/orgs/$target_org/repos?per_page=100&page=1" | jq -r --arg repo "$target_org/$repo_path" '.[] | select(.full_name == $repo)')
+
+    if [[ -z "$existing_repo" ]]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+function createRepo() {
+    local target_org=$1
+    local repo_path=$2
+
+    create_repo_response=$(curl -s -u "$GITHUB_USERNAME:$GITHUB_TOKEN" -X POST "https://api.github.com/orgs/$target_org/repos" -d "{\"name\":\"$repo_path\",\"private\":true}")
+
+    if [[ $(echo $create_repo_response | jq -r '.name') == "$repo_path" ]]; then
+        echo "New repository created: $target_org/$repo_path"
+        return 0
+    else
+        echo "Failed to create repository: $target_org/$repo_path"
+        return 1
+    fi
+}
+
+function createFork() {
+    local target_org=$1
+    local repo_path=$2
+
+    fork_response=$(curl -s -u "$GITHUB_USERNAME:$GITHUB_TOKEN" -X POST "https://api.github.com/repos/$target_org/$repo_path/forks")
+
+    if [[ $(echo $fork_response | jq -r '.name') == "$repo_path" ]]; then
+        echo "Fork created: $target_org/$repo_path"
+        return 0
+    else
+        echo "Failed to create fork: $target_org/$repo_path"
+        return 1
+    fi
+}
+
+function createForks() {
+    # Usage: createForks TARGET_PROJECT_PATH TARGET_ORG SPECIFIED_REMOTE
+    TARGET_PROJECT_PATH=$1
+    TARGET_ORG=$2
+    SPECIFIED_REMOTE=$3
+
+    cd $TARGET_PROJECT_PATH
+    echo "TARGET_PROJECT_PATH = $TARGET_PROJECT_PATH"
+    echo "Getting current projects manifest..."
+    manifest=$(repo manifest -o $TEMP_PATH/manifest.xml)
+
+    matching_repos=$(getMatchingRepos $TEMP_PATH/manifest.xml $SPECIFIED_REMOTE)
+    displayRepos "$matching_repos"
+
+    answer=$(askConfirmation)
+    if [[ "$answer" != "y" ]] && [[ "$answer" != "Y" ]]; then
+        echo "Aborting fork creation."
+        return
+    fi
+
+    for repo_path in $matching_repos; do
+        if checkRepoExists $TARGET_ORG $repo_path; then
+            echo "Repository found in the target organization: $TARGET_ORG/$repo_path"
+        else
+            echo "Repository not found in the target organization: $TARGET_ORG/$repo_path"
+
+            read -p "Do you want to create a new repo for $TARGET_ORG/$repo_path? (y/n): " create_repo_answer
+            if [[ "$create_repo_answer" != "y" ]] && [[ "$create_repo_answer" != "Y" ]]; then
+                echo "Skipping fork creation for $TARGET_ORG/$repo_path."
+                continue
+            fi
+
+            if createRepo $TARGET_ORG $repo_path; then
+                echo "New repository created: $TARGET_ORG/$repo_path"
+            else
+                echo "Failed to create repository: $TARGET_ORG/$repo_path"
+                continue
+            fi
+        fi
+
+        if createFork $TARGET_ORG $repo_path; then
+            echo "Fork created: $TARGET_ORG/$repo_path"
+        else
+            echo "Failed to create fork: $TARGET_ORG/$repo_path"
+        fi
+    done
+}
+
+
+
 # main
 
 # Find all subfolders in the projects folder
@@ -280,7 +426,16 @@ echo "subfolders_list = $subfolders_list"
 echo "$subfolders_list" >$AG_CONFIG_PATH/projects.list
 
 # Build a list of menu items
-main_menu_items=("Initialize Supported Project" "Create New" "Setup Virtual Environment" "Check Project Status" "Add AG To Project" "Update Project" "Delete Project" "Pick New Project Folder" "Exit")
+main_menu_items=("Initialize Supported Project" \
+    "Create New" "Setup Virtual Environment" \
+    "Check Project Status" \
+    "Add AG To Project" \
+    "Update Project" \
+    "Delete Project" \
+    "Pick New Project Folder" \
+    "Create Forks" \
+    "Exit"
+)
 
 # present the list as a menu, with a Create New option added.
 menu "$subfolders_list" "${main_menu_items[@]}"
@@ -593,6 +748,42 @@ elif [[ "$projects_answer" == "Pick New Project Folder" ]]; then
     pickNewProjectFolder
     alert_message "Project Folder Reset Complete \nRelaunch the program to continue"
     exit 0
+elif [[ "$projects_answer" == "Create Forks" ]]; then
+    # createForks TARGET_PROJECT_PATH TARGET_ORG SPECIFIED_REMOTE
+    #
+    # Define the TARGET_PROJECT_PATH
+    dselect "$projects_path"
+    current_project_folder=$(0<"${dir_tmp}/${file_tmp}")
+    # Define the TARGET_ORG
+    input 1 " Please enter the ssh address of the target org: " "ssh://git@github.com/target-org"
+    target_org=$(0<"${dir_tmp}/${file_tmp}")
+    echo "target_org = $target_org"
+
+    # Define the SPECIFIED_REMOTE
+    #
+    # Get all remotes from current_project_folder manifest
+    remote_names=()
+    remote_urls=()
+    remote_menu_options=()
+    # cd into current_project_folder/.repo/manifests and grep for "<remote name=", 
+    # then save the remote_name to the "name=" and remote_url to the "fetch=" value
+    cd $current_project_folder/.repo/manifests
+    for remote in $(grep "<remote name=" $current_project_folder/.repo/manifests/manifest.xml | awk -F'>' '{print $2}' | awk -F'<' '{print $1}'); do
+        remote_names+=($remote)
+        remote_urls+=($remote)
+        # Now we combine both names and urls to make a menu option
+        remote_menu_options+=($remote_names[-1] $remote_urls[-1])
+    done
+    menu "$remote_menu_options"
+    remote_answer=$(0<"${dir_tmp}/${file_tmp}")
+    # cut the remote_answer to be just the name
+    remote_name=$(0<"${dir_tmp}/${file_tmp}")
+    echo "remote_name = $remote_name"
+    remote_url=$(0<"${dir_tmp}/${file_tmp}")
+    echo "remote_url = $remote_url"
+
+    createForks $current_project_folder $target_org $remote_name
+    
 elif [[ "$projects_answer" == "Exit" ]]; then
     exit 0
 elif [[ -d "$projects_answer" ]]; then
