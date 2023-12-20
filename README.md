@@ -63,7 +63,7 @@ AGPM comes with a number of initial options:
 - **Pick New Project Folder**: Lets you select a different project folder (handy for multiple drives)
 - **Create Forks**: Forks an existing project to a git destination
 
-## Contributions & Licensing
+## Contributions, Conduct & Licensing
 
 Just keeping it simple. 
 
