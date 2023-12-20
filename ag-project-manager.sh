@@ -53,7 +53,7 @@ fi
 
 function setupVirtenv() {
     TARGET_PROJECT_PATH=$1
-    REQUIREMENTS="gcc glibc ninja-build meson"
+    REQUIREMENTS="gcc7 glibc ninja meson"
     echo "TARGET_PROJECT_PATH: $TARGET_PROJECT_PATH"
     cd $TARGET_PROJECT_PATH
     # Check if python3 virtual environment is installed
